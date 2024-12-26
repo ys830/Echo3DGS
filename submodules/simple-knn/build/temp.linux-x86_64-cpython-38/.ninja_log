@@ -1,0 +1,4 @@
+# ninja log v5
+0	11843	1735195933410363075	/data/yisi/mywork/Echo3DGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/simple_knn.o	24f3586005152aae
+0	19683	1735195941238347409	/data/yisi/mywork/Echo3DGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/ext.o	48ddd7ec48b07c5a
+0	56617	1735195978186255424	/data/yisi/mywork/Echo3DGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/spatial.o	48e71a93f6e4bbfc
