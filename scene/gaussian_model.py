@@ -187,6 +187,9 @@ class GaussianModel:
                 #     .cuda()
                 # )
                 fused_density = torch.tensor(np.asarray(pcd[:,10:11])).float().cuda()
+                rots = torch.tensor(np.asarray(pcd[:,3:7])).float().cuda()
+                scales = torch.tensor(np.asarray(pcd[:,7:10])).float().cuda()
+
             elif init_from == "random":
                 fused_point_cloud = pcd[:, :-1].float().cuda()
                 fused_density = self.density_inverse_activation(
@@ -197,6 +200,11 @@ class GaussianModel:
                         fused_point_cloud.shape[0]
                     )
                 )
+                dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd[:, 0:3])).float().cuda()), 0.0000001)
+                scales = self.scaling_inverse_activation(torch.sqrt(dist2))[...,None].repeat(1, 3)
+                rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+                rots[:, 0] = 1
+                
             elif init_from == "unifrm":
                 #print(11111)
                 fused_point_cloud = pcd[:, :-1].float().cuda()
@@ -219,8 +227,7 @@ class GaussianModel:
             # rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
             # rots[:, 0] = 1
                 
-            rots = torch.tensor(np.asarray(pcd[:,3:7])).float().cuda()
-            scales = torch.tensor(np.asarray(pcd[:,7:10])).float().cuda()
+      
 
             self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
             self._scaling = nn.Parameter(scales.requires_grad_(True))

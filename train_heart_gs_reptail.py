@@ -1,11 +1,11 @@
 import torch
 from torch import nn
-from opt import get_opts
+from opt_reptile import get_opts
 import os
 import imageio
 import numpy as np
 from einops import rearrange
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from datasets import dataset_dict
 from datasets.ray_utils import axisangle_to_R, get_rays,slice_operator
 # from ssimloss import S3IM
@@ -44,8 +44,7 @@ class GSystem(LightningModule):
             else None
         )
         tv_vol_size = hparams.tv_vol_size
-        self.tv_vol_nVoxel = torch.tensor([tv_vol_size, tv_vol_size, tv_vol_size])
-        self.tv_vol_nVoxel1 = torch.tensor([1,tv_vol_size,tv_vol_size])
+        self.tv_vol_nVoxel = torch.tensor([160, 160,160]) 
         
         self.tv_vol_sVoxel = (sVoxel / nVoxel * self.tv_vol_nVoxel)
 
@@ -61,76 +60,25 @@ class GSystem(LightningModule):
         initial_quaternion = fixed_poses[...,:3]
         initial_quaternion = initial_quaternion.transpose(1, 2)
         self.initial_quaternions = rotation_matrices_to_quaternions(initial_quaternion).cuda()
-        #print(self.initial_quaternions.shape)
-        # self.translation_model = TranslationModel(self.initial_translation)
-        # self.quaternion_model = QuaternionModel(self.initial_quaternions)
-        # self.translation_model=translation_model()
-        # self.quaternion_model =quaternion_model()
-        # print('AAA',self.translation_model)
+        
+        # 直接读取指定的 volume 数据
+        self.fixed_volume = torch.tensor(np.load(self.hparams.root_vol)/255.0).to(self.device) # 加载监督数据
+
+        # 其他初始化过程保持不变
         self.gaussians = GaussianModel([self.scale_min_bound, self.scale_max_bound])
         self.scene = Scene(
-            hparams,
+            self.hparams,
             self.gaussians,
             load_iteration=None,
-            init_from=hparams.init_from,
-            ply_path=hparams.path_ply,
+            init_from=self.hparams.init_from,
+            ply_path=self.hparams.path_ply,
         )
-        self.gaussians.training_setup(hparams)
+        self.gaussians.training_setup(self.hparams)
 
-        if hparams.start_checkpoint:
-            model_params, self.first_iter = torch.load(hparams.start_checkpoint)
-            self.gaussians.restore(model_params, hparams)       
-
-
-    def forward(self,batch,split):
-
-        # quaternion = self.gaussians.quaternion_model()
-        # trans = self.gaussians.translation_model()
-
-        quaternion = self.initial_quaternions
-        trans = self.initial_translation
-        #print(trans.device)
-        self.tv_vol_center = (self.bbox[0] + self.tv_vol_sVoxel / 2) + (
-                self.bbox[1] - self.tv_vol_sVoxel - self.bbox[0]
-            ) * torch.rand(3)
-
-        vol_pkg = query(
-                self.scene.gaussians,
-                self.tv_vol_center,
-                self.tv_vol_nVoxel1,
-                self.tv_vol_sVoxel,
-                quaternion,
-                trans,
-                self.hparams,
-            )
-        prediction, viewspace_point_tensor, visibility_filter, radii = (
-            vol_pkg["vol"],
-            vol_pkg["viewspace_points"],
-            vol_pkg["visibility_filter"],
-            vol_pkg["radii"],
-        )
-        vol_pred = query(
-                self.scene.gaussians,
-                self.tv_vol_center,
-                self.tv_vol_nVoxel,
-                self.tv_vol_sVoxel,
-                'None',
-                'None',
-                self.hparams,
-            )["vol"]
-
-        return prediction,vol_pred,viewspace_point_tensor,visibility_filter,radii
-
-    
-    def configure_optimizers(self):
-        # self.register_buffer('directions', self.train_dataset.directions.to(self.device))
-        # self.register_buffer('poses', self.train_dataset.poses.to(self.device))
-        opts = []
-        self.net_opt = self.gaussians.optimizer
-
-        opts += [self.net_opt]
-        return opts
-
+        if self.hparams.start_checkpoint:
+            model_params, self.first_iter = torch.load(self.hparams.start_checkpoint)
+            self.gaussians.restore(model_params, self.hparams)
+            
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
                           num_workers=4,
@@ -144,75 +92,96 @@ class GSystem(LightningModule):
                           batch_size=None,
                           pin_memory=True)
 
-    def training_step(self,batch, batch_nb, *args):
-        #torch.autograd.set_detect_anomaly(True)
+    def forward(self,batch,split):
+
+        self.tv_vol_center = (self.bbox[0] + self.tv_vol_sVoxel / 2) + (
+                self.bbox[1] - self.tv_vol_sVoxel - self.bbox[0]
+            ) * torch.rand(3)
+
+        vol_pred = query(
+                self.scene.gaussians,
+                self.tv_vol_center,
+                self.tv_vol_nVoxel,
+                self.tv_vol_sVoxel,
+                'None',
+                'None',
+                self.hparams,
+            )["vol"]
+
+        return vol_pred
+
+    
+    def configure_optimizers(self):
+        # self.register_buffer('directions', self.train_dataset.directions.to(self.device))
+        # self.register_buffer('poses', self.train_dataset.poses.to(self.device))
+        opts = []
+        self.net_opt = self.gaussians.optimizer
+
+        opts += [self.net_opt]
+        return opts
+
+    def training_step(self, batch, batch_nb, *args):
         self.gaussians.update_learning_rate(self.global_step)
-        results,vol_pred,self.viewspace_point_tensor,self.visibility_filter,self.radii = self(batch, split='train')
-        loss_d = 0
-        n = results.shape[0]
-        for i in range(n):
-            loss1 = self.loss(results[i], self.fixed_images[i].cuda())
-            loss = sum(lo.mean() for lo in loss1.values())
-            loss_d +=loss
-        loss_d /= n
-        total_loss = loss_d
+        vol_pred = self(batch, split='train')  # 这里的 batch 可作为输入，但固定数据已准备好
+
+        # 计算损失
+        loss_d = self.loss(vol_pred, self.fixed_volume.cuda())  # 使用固定的 volume 数据计算损失
+        total_loss = loss_d['rgb'].mean()
+
+        # 计算 TV 正则化损失
         loss_tv = tv_3d_loss(vol_pred, reduction="mean")
         total_loss += 1 * loss_tv
+
+        # 计算 PSNR
         with torch.no_grad():
-            psnr = 0
-            for i in range(n):
-                psnr += self.train_psnr(results[i], self.fixed_images[i].cuda())
-            psnr /= n 
-            # psnr += self.train_psnr(results[0], self.fixed_images[0].cuda())
+            psnr = self.train_psnr(vol_pred, self.fixed_volume.cuda())
         
+        # 记录训练指标
         self.log('lr', self.net_opt.param_groups[0]['lr'])
-        self.log('train/loss', loss_d)
-        self.log('train/psnr',psnr, True)
+        self.log('train/loss', total_loss)
+        self.log('train/psnr', psnr, True)
         self.log('train/n_point',self.gaussians.get_xyz.shape[0], True)
-        # save_dir = f'ckpts/{self.hparams.dataset_name}/{self.hparams.exp_name}/img/'
-        # os.makedirs(save_dir, exist_ok=True)
-        # result =results[0].detach().cpu().numpy()
-        # img =(255*result.reshape(160, 160)).astype(np.uint8)
-        # imageio.imwrite(f'{save_dir}/step_{self.global_step}.png', img)
-
+        
         return total_loss
+
     
-    def on_train_epoch_end(self):
-        #if self.gaussians.get_xyz.shape[0] < 10000:
-        with torch.no_grad():
-            self.gaussians.max_radii2D[self.visibility_filter] = torch.max(
-                self.gaussians.max_radii2D[self.visibility_filter], self.radii[self.visibility_filter]
-            )
-            self.gaussians.add_densification_stats(self.viewspace_point_tensor, self.visibility_filter)
-            grads = self.gaussians.xyz_gradient_accum / self.gaussians.denom
-            grads[grads.isnan()] = 0.0
+    # 致密化
+    # def on_train_epoch_end(self):
+    #     #if self.gaussians.get_xyz.shape[0] < 10000:
+    #     with torch.no_grad():
+    #         self.gaussians.max_radii2D[self.visibility_filter] = torch.max(
+    #             self.gaussians.max_radii2D[self.visibility_filter], self.radii[self.visibility_filter]
+    #         )
+    #         self.gaussians.add_densification_stats(self.viewspace_point_tensor, self.visibility_filter)
+    #         grads = self.gaussians.xyz_gradient_accum / self.gaussians.denom
+    #         grads[grads.isnan()] = 0.0
 
-            if self.global_step < self.hparams.densify_until_iter:
-                if (
-                    self.global_step > self.hparams.densify_from_iter
-                    and self.global_step % self.hparams.densification_interval == 0
-                ):
-                    self.gaussians.densify_and_prune(
-                        grads,
-                        self.hparams.densify_grad_threshold,
-                        self.hparams.density_min_threshold,
-                        self.hparams.max_screen_size,
-                        self.hparams.max_scale,
-                        self.hparams.max_num_gaussians,
-                        self.hparams.densify_scale_threshold,
-                        self.bbox
-                    )
-                # if self.global_step % self.hparams.opacity_reset_interval == 0:
-                #     self.gaussians.reset_density()
+    #         if self.global_step < self.hparams.densify_until_iter:
+    #             if (
+    #                 self.global_step > self.hparams.densify_from_iter
+    #                 and self.global_step % self.hparams.densification_interval == 0
+    #             ):
+    #                 self.gaussians.densify_and_prune(
+    #                     grads,
+    #                     self.hparams.densify_grad_threshold,
+    #                     self.hparams.density_min_threshold,
+    #                     self.hparams.max_screen_size,
+    #                     self.hparams.max_scale,
+    #                     self.hparams.max_num_gaussians,
+    #                     self.hparams.densify_scale_threshold,
+    #                     self.bbox
+    #                 )
+    #             # if self.global_step % self.hparams.opacity_reset_interval == 0:
+    #             #     self.gaussians.reset_density()
 
-            # Prune nan
-            prune_mask = torch.isnan(self.gaussians.get_density).squeeze()
-            if prune_mask.sum() > 0:
-                self.gaussians.prune_points(prune_mask)
+    #         # Prune nan
+    #         prune_mask = torch.isnan(self.gaussians.get_density).squeeze()
+    #         if prune_mask.sum() > 0:
+    #             self.gaussians.prune_points(prune_mask)
             
-            prune_mask = (torch.isnan(self.gaussians.get_density)).squeeze()
-            if prune_mask.sum() > 0:
-                self.gaussians.prune_points(prune_mask)
+    #         prune_mask = (torch.isnan(self.gaussians.get_density)).squeeze()
+    #         if prune_mask.sum() > 0:
+    #             self.gaussians.prune_points(prune_mask)
 
     def on_validation_start(self):
         # torch.cuda.empty_cache()
@@ -221,8 +190,6 @@ class GSystem(LightningModule):
             os.makedirs(self.val_dir, exist_ok=True)
 
     def validation_step(self, batch, batch_nb):
-
-
         logs = {}
         return logs
 
@@ -232,7 +199,8 @@ class GSystem(LightningModule):
             (self.gaussians.capture(), self.current_epoch),
             f'ckpts/{hparams.dataset_name}/{hparams.exp_name}' + "/chkpnt" + str(self.current_epoch) + ".pth",
         )
-        #self.gaussians.save_ply(f'ckpts/{hparams.dataset_name}/{hparams.exp_name}' + "point_cloud.ply")
+        self.gaussians.save_reptail_npy(f'ckpts/{hparams.dataset_name}/{hparams.exp_name}' + "reptail_point.npy")
+        # 保存[160,160,160]的文件
         self.scene.save(f'ckpts/{hparams.dataset_name}/{hparams.exp_name}',self.global_step,query,self.tv_vol_center,
                     self.tv_vol_nVoxel,
                     self.tv_vol_sVoxel,self.hparams)

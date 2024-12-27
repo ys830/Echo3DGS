@@ -2,9 +2,10 @@ import argparse
 
 def get_opts():
     parser = argparse.ArgumentParser()
-
     # dataset parameters
-    parser.add_argument('--root_dir', type=str, default='/data/yisi/mywork/Echo3DGS/3d_slice01/test/005',
+    parser.add_argument('--root_dir', type=str, default='./3d_slice/012',
+                        help='root directory of dataset')
+    parser.add_argument('--root_vol', type=str, default='./ini_meta/3d_slice/005_mlp5.npy',
                         help='root directory of dataset')
     parser.add_argument('--dataset_name', type=str, default='heart',
                         choices=['heart', 'heart_dy','heart_dy_3d'],
@@ -33,9 +34,9 @@ def get_opts():
                         help='whether to save test image and video')
 
     # misc
-    parser.add_argument('--exp_name', type=str, default='./GS_rp_wo_density/3d005/',
+    parser.add_argument('--exp_name', type=str, default='./GS/3d012_2/',
                         help='experiment name')
-    parser.add_argument('--path_ply', type=str, default='./ini_pcd/reptail_point.npy',
+    parser.add_argument('--path_ply', type=str, default='./ini_pcd/fused_point_cloud_array.npy',
                         help='ini_ply_path')
     parser.add_argument('--ckpt_path', type=str, default=None,
                         help='pretrained checkpoint to load (including optimizers, etc)')
@@ -51,7 +52,7 @@ def get_opts():
                         help='number of voxel')
     parser.add_argument('--model_path', type=str, default='',
                         help='model_path')
-    parser.add_argument('--init_from', type=str, default='pcd', ##random_2000
+    parser.add_argument('--init_from', type=str, default='random_2000', ##random_2000
                         help='model_path')
     parser.add_argument('--densify_scale_threshold', type=float, default=0.05,
                         help='densify_scale_threshold')

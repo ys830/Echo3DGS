@@ -1,3 +1,7 @@
-train_heart_gs_reptail.py
-opt_reptile.py
-3d_slice
+3d_slice*
+__pycache__/
+log*
+ckpts
+*.pyc
+*.pyo
+3d_slice01

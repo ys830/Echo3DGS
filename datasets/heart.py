@@ -28,11 +28,19 @@ class HeartDataset(BaseDataset):
 
     def read_meta(self):
 
-        self.image_paths = \
-            sorted(glob.glob(os.path.join(self.root_dir, 'images/*')))
+        # self.image_paths = \
+        #     sorted(glob.glob(os.path.join(self.root_dir, 'images/*')))
 
-        with open(os.path.join(self.root_dir,"transforms_train.json"), 'r') as f:
+        # with open(os.path.join(self.root_dir,"transforms_train.json"), 'r') as f:
+        #     meta = json.load(f,object_pairs_hook=collections.OrderedDict)
+
+        dir_num = self.root_dir.split('/')[-1]
+        self.image_paths = \
+            sorted(glob.glob(os.path.join(self.root_dir, f'{dir_num}_process/*')))
+
+        with open(os.path.join(self.root_dir,f"transforms_{dir_num}.json"), 'r') as f:
             meta = json.load(f,object_pairs_hook=collections.OrderedDict)
+
         self.poses = []
         for frame in meta['frames']:
             pose = np.array(frame['transform_matrix'])[:3, :4]            
